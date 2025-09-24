@@ -1,7 +1,7 @@
 // apps/api/src/routes/trips.ts
 import { Router, type Request, type Response } from "express";
 import { prisma } from "@travelmind/db";
-import { smartChat } from "@travelmind/ai";
+import { planTrip } from "@travelmind/ai";
 // OPTIONAL: npm i zod  (remove if you prefer plain TypeScript checks)
 import { z } from "zod";
 
