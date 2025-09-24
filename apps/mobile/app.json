@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "TravelMind Companion",
+    "slug": "travelmind-companion",
+    "scheme": "travelmind",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": { "image": "./assets/splash.png", "resizeMode": "contain", "backgroundColor": "#ffffff" },
+    "updates": { "fallbackToCacheTimeout": 0 },
+    "assetBundlePatterns": ["**/*"],
+    "ios": { "supportsTablet": true },
+    "android": { "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#ffffff" } },
+    "web": { "bundler": "metro" },
+    "extra": {
+      "apiUrl": process.env.EXPO_PUBLIC_API_URL
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "outDir": "dist",
+    "rootDir": "src",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      // If you kept DB as source, leave this:
+      "@travelmind/db/*": ["../../packages/db/*"],
+
+      // NEW: tell tsc where to find the built AI package
+      "@travelmind/ai": ["../../packages/ai/dist"],
+      "@travelmind/ai/*": ["../../packages/ai/dist/*"]
+    }
+  },
+  "include": ["src"]
+}

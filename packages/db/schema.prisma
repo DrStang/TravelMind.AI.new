@@ -1,0 +1,120 @@
+generator client {
+  provider      = "prisma-client-js"
+  // "native" lets it still run locally; Bookworm needs the OpenSSL 3 build.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"      // works for MariaDB
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  trips     Trip[]
+  todos     Todo[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Trip {
+  id          String      @id @default(cuid())
+  user        User        @relation(fields: [userId], references: [id])
+  userId      String
+  title       String
+  startDate   DateTime
+  endDate     DateTime
+  origin      String?
+  destination String
+  budgetCents Int?
+  days        DayPlan[]
+  bookings    Booking[]
+  todos       Todo[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DayPlan {
+  id        String     @id @default(cuid())
+  trip      Trip       @relation(fields: [tripId], references: [id])
+  tripId    String
+  date      DateTime
+  activities Activity[]
+}
+
+model Activity {
+  id         String   @id @default(cuid())
+  dayPlan    DayPlan  @relation(fields: [dayPlanId], references: [id])
+  dayPlanId  String
+  title      String
+  startTime  DateTime?
+  endTime    DateTime?
+  placeId    String?
+  notes      String?
+}
+
+model Todo {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id])
+  userId    String
+  trip      Trip?     @relation(fields: [tripId], references: [id])
+  tripId    String?
+  title     String
+  status    TodoStatus @default(PENDING)
+  dueDate   DateTime?
+  kind      String?
+  meta      Json?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+enum TodoStatus {
+  PENDING
+  DONE
+  SKIPPED
+}
+
+model TodoTemplate {
+  id        String   @id @default(cuid())
+  title     String
+  kind      String?
+  role      String?
+  createdAt DateTime @default(now())
+}
+enum BookingType {
+  FLIGHT
+  HOTEL
+  ACTIVITY
+  TRAIN
+  CAR
+  OTHER
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELED
+  COMPLETED
+}
+
+model Booking {
+  id          String        @id @default(cuid())
+  trip        Trip          @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId      String
+
+  type        BookingType
+  status      BookingStatus @default(PENDING)
+
+  vendor      String?       // e.g. "Delta", "Booking.com", "Viator"
+  reference   String?       // e.g. PNR / confirmation code
+  start       DateTime?     // check-in / departure
+  end         DateTime?     // check-out / arrival
+  priceCents  Int?          // store money as integer cents
+  currency    String?       // "USD", "EUR", etc.
+  meta        Json?         // raw API payload / notes
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}

@@ -1,0 +1,12 @@
+node_modules
+.expo
+dist
+android
+ios
+web-build
+.git
+.gitignore
+Dockerfile
+README.md
+*.log
+assets/*.psd
