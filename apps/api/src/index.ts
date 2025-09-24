@@ -5,8 +5,8 @@ import { smartChat } from "@travelmind/ai";
 import Redis from "ioredis";
 import { z } from "zod";
 type TodoTemplateLite = { title: string; kind?: string | null };
-import tripsRouter from "./routes/trips";
-import todosRouter from "./routes/todos";
+import tripsRouter from "./routes/trips.js";
+import todosRouter from "./routes/todos.js";
 
 const app = express();
 app.use(cors());
