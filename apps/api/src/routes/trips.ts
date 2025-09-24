@@ -10,70 +10,23 @@ const router = Router();
 /** ----------------------------
  * Itinerary JSON schema (zod)
  * ---------------------------*/
-const ActivitySchema = z.object({
-    title: z.string().min(1),
-    startTime: z.string().optional(),
-    endTime: z.string().optional(),
-    notes: z.string().optional(),
+const Body = z.object({
+    userId: z.string().min(1),
+    prompt: z.string().min(10),
+    model: z.string().optional(),
 });
-const DaySchema = z.object({
-    date: z.string().min(1), // ISO or natural; you can normalize later
-    activities: z.array(ActivitySchema).default([]),
-});
-const ItinerarySchema = z.object({
-    title: z.string().min(1),
-    startDate: z.string().min(1),
-    endDate: z.string().min(1),
-    destination: z.string().min(1),
-    days: z.array(DaySchema).default([]),
-});
-type Itinerary = z.infer<typeof ItinerarySchema>;
-
-/** Extract the first JSON block from a string (fallback if model adds prose). */
-function extractJson(text: string): string {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start !== -1 && end !== -1 && end > start) {
-        return text.slice(start, end + 1);
-    }
-    throw new Error("no_json_found");
-}
-
-/** Build the messages to force a strict JSON itinerary */
-function buildMessages(prompt: string) {
-    const system =
-        "You are TravelMind, meticulous travel planner that outputs days and activities. Do not invent bookings or ticket numbers. Respond ONLY with a single JSON object. No prose."
-    const user = `Create a 5-7 day itinerary JSON for: ${prompt}.
-Keys: title,startDate,endDate,destination,days[{date,activities[{title,startTime?,endTime?,notes?}]}].`;
-    // We’ll pass these to smartChat via system + user content
-    return { system, user };
-}
 
 router.post("/", async (req: Request, res: Response) => {
+    const parsed = Body.safeParse(req.body);
+    if (!parsed.success) {
+        return res.status(400).json({ error: "bad_request", detail: parsed.error.flatten() });
+    }
+
+    const { userId, prompt, model } = parsed.data;
+
     try {
-        const { userId, prompt } = req.body || {};
-        if (!userId || !prompt) {
-            return res.status(400).json({ error: "userId and prompt are required" });
-        }
-
-        // 1) Ask the AI (Ollama → fallback to OpenAI if slow/unavailable)
-        const { system, user } = buildMessages(prompt);
-        const raw = await smartChat(user, {
-            mode: "planner",
-            system,
-            // override per-route if desired:
-            // maxDurationMs: 280_000, maxOutputTokens: 800, retryOllama: 1
-        });
-
-        // 2) Parse + validate itinerary JSON
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(raw);
-        } catch {
-            parsed = JSON.parse(extractJson(raw));
-        }
-        const itinerary = ItinerarySchema.parse(parsed) as Itinerary;
-
+        // 1. Generate itinerary JSON
+        const itinerary = await planTrip(prompt, model ? { model } : undefined);
         // 3) Persist to DB
         //    Assumes Prisma models: Trip(id,userId,title,startDate,endDate,destination,rawPlan)
         //    DayPlan(id,tripId,date)  Activity(id,dayPlanId,title,startTime?,endTime?,notes?)
