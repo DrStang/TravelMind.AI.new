@@ -26,6 +26,7 @@ model Trip {
   title       String
   startDate   DateTime
   endDate     DateTime
+  rawPlan     Json?
   origin      String?
   destination String
   budgetCents Int?

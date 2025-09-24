@@ -5,11 +5,15 @@ import { smartChat } from "@travelmind/ai";
 import Redis from "ioredis";
 import { z } from "zod";
 type TodoTemplateLite = { title: string; kind?: string | null };
+import tripsRouter from "./routes/trips";
+import todosRouter from "./routes/todos";
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
+app.use("/api/trips", tripsRouter);
+app.use("/api/todos", todosRouter);
 const redis = new Redis(process.env.REDIS_URL || "redis://127.0.0.1:6379");
 
 // Simple health
@@ -44,14 +48,15 @@ app.post("/api/trips", async (req: Request, res: Response) => {
 }
 No ticket numbers, no fake booking IDs.`;
 
-    const reply = await smartChat(
-        [
-            { role: "system", content: sys },
-            { role: "user", content: `Create itinerary for: ${prompt}` }
-        ],
-        "planner"
-    );
 
+    const reply = await smartChat(
+        `Create itinerary for: ${prompt}`,
+        {
+            mode: "planner",
+            system: sys,
+            // (any other per-call options go here)
+        }
+    );
     let draft: any;
     try { draft = JSON.parse(reply); }
     catch { return res.status(502).json({ error: "Planner returned invalid JSON", raw: reply }); }
@@ -141,10 +146,12 @@ app.post("/api/companion/ask", async (req: Request, res: Response) => {
     if (cached) return res.json({ answer: cached, cached: true });
 
     const answer = await smartChat(
-        [{ role: "system", content: "You are a concise on-trip assistant." },
-            { role: "user", content: message }],
-        "companion",
-        0.2
+        message,
+        {
+            mode: "companion",
+            system: "You are a concise on-trip assistant.",
+            // (any other per-call options go here)
+        }
     );
     await redis.setex(key, 60, answer);
     res.json({ answer, cached: false });

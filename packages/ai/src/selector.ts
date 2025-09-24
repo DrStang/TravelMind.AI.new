@@ -1,29 +1,64 @@
-export type Mode = "planner" | "companion" | "journal";
-export type SelectorInput = { message: string; mode: Mode; locale?: string; };
+// packages/ai/src/selector.ts
+export type Mode = "companion" | "planner" | "journal";
+
+export type ModelChoice = {
+    provider: "ollama" | "openai";
+    model: string;
+};
+
+export type SelectorInput = {
+    message: string;
+    mode?: Mode;
+};
 
 export class ModelSelector {
-    static analyzeComplexity(message: string) {
-        const wc = message.trim().split(/\s+/).length;
+    /** crude token estimate (~4 chars/token), good enough for guardrails */
+    static estimateTokens(text: string): number {
+        return Math.ceil(text.trim().length / 4);
+    }
+
+    /** Your multi-model Ollama strategy */
+    static selectOllamaModel(input: SelectorInput): string {
+        const complexity = this.analyzeComplexity(input.message);
+
+        // big model for complex planner requests
+        if (complexity === "high" && input.mode !== "companion") {
+            return process.env.OLLAMA_MODEL_COMPLEX || "qwen3:30b"; // or "llama3.1:70b"
+        }
+
+        // fast model for companion (chatty) mode
+        if (input.mode === "companion") {
+            return process.env.OLLAMA_MODEL_COMPANION || "mistral:7b";
+        }
+
+        // balanced default
+        return process.env.OLLAMA_MODEL_DEFAULT || "llama3.1:latest";
+    }
+
+    /** Keep your earlier complexity heuristic */
+    static analyzeComplexity(message: string): "low" | "high" {
         const complexKeywords = [
-            "analyze","compare","detailed","comprehensive","optimize",
-            "multi-city","constraints","budget","weather","reschedule"
+            "analyze", "compare", "detailed", "comprehensive",
+            "optimize", "itinerary", "budget", "constraints"
         ];
+        const wc = message.trim().split(/\s+/).length;
         const hasComplex = complexKeywords.some(k => message.toLowerCase().includes(k));
-        if (wc > 120 || hasComplex) return "high";
-        if (wc > 60) return "medium";
-        return "low";
+        return hasComplex || wc > 120 ? "high" : "low";
     }
 
-    static selectOllamaModel(input: SelectorInput) {
-        const c = this.analyzeComplexity(input.message);
-        if (c === "high") return "qwen3:30b";       // big model llama3.1:70b"
-        if (input.mode === "companion") return "mistral:7b"; // fast RT
-        return "llama3.1:latest";                          // balanced default
+    /** What client.ts expects: returns a provider+model choice (Ollama primary) */
+    static decidePrimary(message: string, mode: Mode = "planner"): ModelChoice {
+        return {
+            provider: "ollama",
+            model: this.selectOllamaModel({ message, mode }),
+        };
     }
 
-    static openaiFallbackFor(input: SelectorInput) {
-        const c = this.analyzeComplexity(input.message);
-        if (c === "high") return process.env.OPENAI_MODEL || "gpt-4o";
-        return process.env.OPENAI_MODEL || "gpt-4o-mini";
+    /** What client.ts expects: OpenAI fallback choice */
+    static fallback(): ModelChoice {
+        return {
+            provider: "openai",
+            model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        };
     }
 }
