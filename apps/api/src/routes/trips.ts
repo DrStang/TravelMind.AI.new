@@ -21,12 +21,13 @@ const DaySchema = z.object({
     activities: z.array(ActivitySchema).default([]),
 });
 const ItinerarySchema = z.object({
-        title: z.string().min(1),
-        startDate: z.string().min(1),
-        endDate: z.string().min(1),
-        destination: z.string().min(1),
-        days: z.array(DaySchema).default([]),
+    title: z.string().min(1),
+    startDate: z.string().optional(),
+    endDate: z.string().optional(),
+    destination: z.string().optional(),
+    days: z.array(DaySchema).default([]),
 });
+
 
 /** Pull the first top-level JSON object out of any string */
 /** Pull the first top-level JSON object out of any string (code-fence safe) */
@@ -45,6 +46,41 @@ function stripThinking(input: string): string {
         .join("\n");
 
     return s.trim();
+}
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function toDateSafe(s?: string | null): Date | null {
+    if (!s) return null;
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+}
+
+/** Derive required Trip start/end dates from itinerary or fallbacks */
+function deriveTripDates(it: { startDate?: string; endDate?: string; days?: { date: string }[] }) {
+    const firstDayStr = it.days?.[0]?.date;
+    const lastDayStr  = it.days?.[Math.max(0, (it.days?.length ?? 1) - 1)]?.date;
+
+    const start =
+        toDateSafe(it.startDate) ??
+        toDateSafe(firstDayStr) ??
+        new Date(); // fallback: now
+
+    const end =
+        toDateSafe(it.endDate) ??
+        toDateSafe(lastDayStr) ??
+        new Date(start.getTime() + Math.max(0, (it.days?.length ?? 6) - 1) * DAY_MS); // fallback: start + (len-1) days
+
+    return { start, end };
+}
+
+/** Combine a YYYY-MM-DD and HH:MM into a Date (or null). */
+function toDateTime(dateStr?: string, timeStr?: string | null): Date | null {
+    if (!dateStr || !timeStr) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+    if (!/^\d{2}:\d{2}$/.test(timeStr)) return null;
+    const iso = `${dateStr}T${timeStr}:00Z`;
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d;
 }
 
 /** Extract the first balanced top-level JSON object from a string */
@@ -136,117 +172,158 @@ router.post("/", async (req: Request, res: Response) => {
     const prompt = String(req.body?.prompt || "");
     const model = req.body?.model ? String(req.body.model) : undefined;
 
-    if (!userId) return res.status(400).json({ error: "bad_request", detail: "userId required" });
+    if (!userId) return res.status(400).json({error: "bad_request", detail: "userId required"});
     if (!prompt || prompt.length < 6)
-        return res.status(400).json({ error: "bad_request", detail: "prompt too short" });
+        return res.status(400).json({error: "bad_request", detail: "prompt too short"});
 
+    // Attempts with progressively stricter instructions
+    // Attempts with progressively stricter instructions + provider preference
     let itineraryJson: string | null = null;
-    let parsed: any = null;
+    let parsed: unknown = null;
 
-    for (const attempt of [1, 2, 3] as const) {
-        const { system, user } = buildMessages(prompt, attempt);
+// helper to call your smartChat in a consistent way
+    async function callOnce(attempt: number, system: string, user: string, opts?: Record<string, any>) {
         const raw = await smartChat(user, {
             mode: "planner",
             system,
-            // override per-route if desired:
-            // maxDurationMs: 280_000, maxOutputTokens: 800, retryOllama: 1
+            maxOutputTokens: opts?.maxOutputTokens ?? 1600,
+            // these may be ignored by your client if unsupported — harmless to pass
         });
-
         console.log(`SMARTCHAT ATTEMPT ${attempt} RAW:`, String(raw || "").slice(0, 200));
-
         const jsonText = extractJSONObject(String(raw || ""));
-        if (!jsonText) {
-            continue; // try next attempt
-        }
-
+        if (!jsonText) return null;
         try {
-            parsed = JSON.parse(jsonText);
-            itineraryJson = jsonText;
-            break; // success
+            return JSON.parse(jsonText);
         } catch {
-            // fall through to next attempt
+            return null;
         }
     }
 
-    if (!itineraryJson || !parsed) {
+// 3 “normal” attempts with increasingly strict wording
+    for (const attempt of [1, 2, 3] as const) {
+        const { system, user } = buildMessages(prompt, attempt);
+        const maybe = await callOnce(attempt, system, user);
+        if (maybe) {
+            parsed = maybe;
+            itineraryJson = JSON.stringify(maybe);
+            break;
+        }
+    }
+
+// If still nothing, try 2 attempts preferring OpenAI (if available) with temp=0
+    if (!parsed) {
+        for (const attempt of [4, 5] as const) {
+            // reuse attempt #3 message (most strict), but force zero temp and prefer OpenAI
+            const { system, user } = buildMessages(prompt, 3);
+            const maybe = await callOnce(attempt, system, user, {
+                temperature: 0,
+                prefer: "openai",
+                provider: "openai",
+                maxOutputTokens: 1600,
+            });
+            if (maybe) {
+                parsed = maybe;
+                itineraryJson = JSON.stringify(maybe);
+                break;
+            }
+        }
+    }
+
+    if (!parsed) {
+        return res.status(500).json({ error: "trip_generation_failed", detail: "no_json_found" });
+    }
+
+// Replace your manual 'shapeOk' check with this:
+
+// Coerce missing days -> []
+    const parsedWithDefaults = (() => {
+        const base = (typeof parsed === "object" && parsed) ? (parsed as Record<string, unknown>) : {};
+        if (!Array.isArray(base.days)) base.days = [];
+        return base;
+    })();
+
+    const safe = ItinerarySchema.safeParse(parsedWithDefaults);
+    if (!safe.success) {
         return res.status(500).json({
             error: "trip_generation_failed",
-            detail: "Could not generate a valid itinerary JSON after multiple attempts.",
+            detail: "json_schema_invalid",
+            issues: safe.error.issues?.slice(0, 10),
         });
     }
 
-    // 5) (Your existing persistence logic — unchanged in spirit)
-    try {
-        // If your previous version already created Trip + nested Days/Activities,
-        // keep exactly that mapping here. Example below mirrors the common pattern.
-        // If your schema differs, adjust field names only.
-        const trip = await prisma.trip.create({
-            data: {
-                userId,
-                title: itinerary.title,
-                destination: itinerary.destination,
-                rawPlan: itineraryJson,
-                startDate: new Date(parsed.startDate),
-                endDate: new Date(parsed.endDate),
-                // Nested create if your schema has TripDay/Activity relations:
-                days: {
-                    create: itinerary.days.map((d) => ({
-                        date: new Date(d.date),
-                        activities: {
-                            create: (d.activities || []).map((a) => ({
-                                title: a.title,
-                                startTime: a.startTime ?? null,
-                                endTime: a.endTime ?? null,
-                                notes: a.notes ?? null,
-                            })),
-                        },
-                    })),
+
+
+// Type helpers so callbacks aren’t implicit any
+    type Activity = z.infer<typeof ActivitySchema>;
+    type Day = z.infer<typeof DaySchema>;
+
+    const itinerary = safe.data;
+    // Derive required fields safely (fixes TS2769 + Prisma non-null)
+    const { start, end } = deriveTripDates({
+        startDate: itinerary.startDate,
+        endDate: itinerary.endDate,
+        days: itinerary.days,
+    });
+    const destination = (itinerary.destination && itinerary.destination.trim()) || "Unknown";
+
+// Persist
+    const trip = await prisma.trip.create({
+        data: {
+            user: {
+                connectOrCreate: {
+                    where: { id: userId },
+                    create: { id: userId, email: `${userId}@local.invalid`}
                 },
             },
-            include: { days: { include: { activities: true } } },
-        });
+            title: itinerary.title,
+            startDate: start,
+            endDate: end,
+            destination,
+            rawPlan: JSON.stringify(itinerary),
+            days: {
+                create: (itinerary.days || []).map((d:Day) => ({
+                    date: toDateSafe(d.date) ?? start,
+                    activities: {
+                        create: (d.activities || []).map((a:Activity) => ({
+                            title: a.title,
+                            startTime: toDateTime(d.date, a.startTime ?? null),
+                            endTime: toDateTime(d.date, a.endTime ?? null),
+                            notes: a.notes ?? null,
+                        })),
+                    },
+                })),
+            },
+        },
+        include: {days: {include: {activities: true}}},
+    });
 
-        return res.json({ tripId: trip.id, trip });
-    } catch (err: any) {
-        console.error("POST /api/trips error", err);
-        return res.status(400).json({
-            error: "trip_generation_failed",
-            detail: String(err?.message || err),
-        });
-    }
-})
+    return res.json({tripId: trip.id, trip});
+
+});
 
 /** GET /api/trips/:id → trip with days + activities (kept as you had it) */
 router.get("/:id", async (req: Request, res: Response) => {
-    const { id } = req.params;
-    if (!id) return res.status(400).json({ error: "id required" });
+    const {id} = req.params;
+    if (!id) return res.status(400).json({error: "id required"});
 
     const trip = await prisma.trip.findUnique({
-        where: { id },
-        include: { days: { include: { activities: true } } },
+        where: {id},
+        include: {days: {include: {activities: true}}},
     });
 
-    if (!trip) return res.status(404).json({ error: "trip_not_found" });
+    if (!trip) return res.status(404).json({error: "trip_not_found"});
     res.json(trip);
 });
 
 /** GET /api/trips?userId=... → list a user's trips (summary) */
 router.get("/", async (req: Request, res: Response) => {
     const userId = String(req.query.userId || "");
-    if (!userId) return res.status(400).json({ error: "userId query is required" });
+    if (!userId) return res.status(400).json({error: "userId query is required"});
 
     const trips = await prisma.trip.findMany({
-        where: { userId },
-        orderBy: { startDate: "desc" },
-        select: {
-            id: true,
-            title: true,
-            destination: true,
-            startDate: true,
-            endDate: true,
-            createdAt: true,
-            updatedAt: true,
-        },
+        where: {userId},
+        orderBy: {startDate: "desc"},
+        select: {id: true, title: true, destination: true, startDate: true, endDate: true, createdAt: true, updatedAt: true},
     });
     res.json(trips);
 });

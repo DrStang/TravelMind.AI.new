@@ -23,7 +23,7 @@ export class ModelSelector {
 
         // big model for complex planner requests
         if (complexity === "high" && input.mode !== "companion") {
-            return process.env.OLLAMA_MODEL_COMPLEX || "qwen3:30b"; // or "llama3.1:70b"
+            return process.env.OLLAMA_MODEL_COMPLEX || "llava-llama3:latest"; // or "llama3.1:70b"
         }
 
         // fast model for companion (chatty) mode
