@@ -21,37 +21,114 @@ const DaySchema = z.object({
     activities: z.array(ActivitySchema).default([]),
 });
 const ItinerarySchema = z.object({
-    title: z.string().min(1),
-    startDate: z.string().optional(),
-    endDate: z.string().optional(),
-    destination: z.string().optional(),
-    days: z.array(DaySchema).default([]),
+        title: z.string().min(1),
+        startDate: z.string().min(1),
+        endDate: z.string().min(1),
+        destination: z.string().min(1),
+        days: z.array(DaySchema).default([]),
 });
 
 /** Pull the first top-level JSON object out of any string */
-function extractJSONObject(s: string): string | null {
-    const t = (s || "").trim();
-    if (!t) return null;
-    if (t.startsWith("{") && t.endsWith("}")) return t;
+/** Pull the first top-level JSON object out of any string (code-fence safe) */
+/** Remove visible chain-of-thought and fences */
+function stripThinking(input: string): string {
+    if (!input) return "";
+    let s = String(input);
 
-    // Greedy match from first "{" to last "}" (handles code fences / stray text)
-    const m = t.match(/\{[\s\S]*\}$/);
-    return m ? m[0] : null;
+    // Kill fenced blocks (``` or ```json … ```), which Ollama/OpenAI sometimes add
+    s = s.replace(/```json[\s\S]*?```/gi, "").replace(/```[\s\S]*?```/g, "");
+
+    // Remove any line that starts with "<think>" (model may not close it)
+    s = s
+        .split(/\r?\n/)
+        .filter((ln) => !/^<think>/i.test(ln.trim()))
+        .join("\n");
+
+    return s.trim();
 }
 
-/** Build the messages to force strict JSON */
-function buildMessages(prompt: string, stricter = false) {
-    const rules = stricter
-        ? `Output ONLY a single valid JSON object. No prose, no markdown, no code fences, no preface, no trailing text.
-Keys required: title,startDate,endDate,destination,days[{date,activities[{title,startTime?,endTime?,notes?}]}].`
-        : `Return ONLY a single JSON object. No prose, no markdown, no code fences. 
-Keys: title,startDate,endDate,destination,days[{date,activities[{title,startTime?,endTime?,notes?}]}].`;
+/** Extract the first balanced top-level JSON object from a string */
+function extractJSONObject(input: string): string | null {
+    if (!input) return null;
+    const s = stripThinking(input);
 
-    const system = `You are TravelMind, a meticulous travel planner. ${rules}`;
-    const user = `Create a 5–7 day itinerary JSON for: ${prompt}`;
+    const start = s.indexOf("{");
+    if (start === -1) return null;
 
-    return { system, user };
+    let depth = 0;
+    let inStr: null | '"' | "'" = null;
+    let esc = false;
+
+    for (let i = start; i < s.length; i++) {
+        const ch = s[i];
+
+        if (inStr) {
+            if (esc) {
+                esc = false;
+            } else if (ch === "\\") {
+                esc = true;
+            } else if (ch === inStr) {
+                inStr = null;
+            }
+            continue;
+        } else {
+            if (ch === '"' || ch === "'") {
+                inStr = ch;
+                continue;
+            }
+            if (ch === "{") depth++;
+            if (ch === "}") depth--;
+            if (depth === 0) {
+                return s.slice(start, i + 1).trim();
+            }
+        }
+    }
+    return null; // unbalanced / not found
 }
+
+/** Build messages; stricter on later attempts to force JSON-only */
+function buildMessages(prompt: string, attempt: 1 | 2 | 3) {
+    const common =
+        "You are TravelMind. Reply with a SINGLE JSON object. No prose, no markdown, no code fences, no <think>, no analysis. " +
+        "Start your reply with '{' and end with '}'. If you are tempted to include anything else, do NOT.";
+
+    const baseKeys =
+        'Keys: title,startDate,endDate,destination,days[{date,activities[{title,startTime?,endTime?,notes?}]}].';
+
+    const template = `{
+  "title": "6-Day Family Italy (Food + History) Under $5000",
+  "startDate": "2025-06-01",
+  "endDate": "2025-06-06",
+  "destination": "Italy (Rome, Florence, Bologna)",
+  "days": [
+    {
+      "date": "2025-06-01",
+      "activities": [
+        { "title": "Colosseum & Roman Forum", "startTime": "09:30", "endTime": "12:00", "notes": "Pre-book tickets" }
+      ]
+    }
+  ]
+}`;
+
+    if (attempt === 1) {
+        return {
+            system: `${common} ${baseKeys}`,
+            user: `Create the itinerary JSON for: ${prompt}`,
+        };
+    }
+    if (attempt === 2) {
+        return {
+            system: `${common} ${baseKeys} Do not include <think> or any explanation. JSON only.`,
+            user: `Create the itinerary JSON for: ${prompt}\nReturn JSON only.`,
+        };
+    }
+    // attempt 3 → force a concrete fill-in template
+    return {
+        system: `${common} ${baseKeys} Fill and return a valid JSON matching this example shape only.`,
+        user: `Create the itinerary JSON for: ${prompt}\nReturn JSON only. Use this example shape as a guide and fill appropriate values:\n${template}`,
+    };
+}
+
 
 /** POST /api/trips → generate + (optionally) save */
 router.post("/", async (req: Request, res: Response) => {
@@ -63,58 +140,43 @@ router.post("/", async (req: Request, res: Response) => {
     if (!prompt || prompt.length < 6)
         return res.status(400).json({ error: "bad_request", detail: "prompt too short" });
 
+    let itineraryJson: string | null = null;
+    let parsed: any = null;
+
+    for (const attempt of [1, 2, 3] as const) {
+        const { system, user } = buildMessages(prompt, attempt);
+        const raw = await smartChat(user, {
+            mode: "planner",
+            system,
+            // override per-route if desired:
+            // maxDurationMs: 280_000, maxOutputTokens: 800, retryOllama: 1
+        });
+
+        console.log(`SMARTCHAT ATTEMPT ${attempt} RAW:`, String(raw || "").slice(0, 200));
+
+        const jsonText = extractJSONObject(String(raw || ""));
+        if (!jsonText) {
+            continue; // try next attempt
+        }
+
+        try {
+            parsed = JSON.parse(jsonText);
+            itineraryJson = jsonText;
+            break; // success
+        } catch {
+            // fall through to next attempt
+        }
+    }
+
+    if (!itineraryJson || !parsed) {
+        return res.status(500).json({
+            error: "trip_generation_failed",
+            detail: "Could not generate a valid itinerary JSON after multiple attempts.",
+        });
+    }
+
+    // 5) (Your existing persistence logic — unchanged in spirit)
     try {
-        // 1) First attempt
-        let { system, user } = buildMessages(prompt, false);
-        let raw = await smartChat({ system, user, model, mode: "planner", maxOutputTokens: 2000 });
-
-        // 2) Extract/parse
-        let jsonText = extractJSONObject(String(raw || ""));
-        let parsed: unknown | null = null;
-
-        if (jsonText) {
-            try {
-                parsed = JSON.parse(jsonText);
-            } catch {
-                parsed = null;
-            }
-        }
-
-        // 3) If parsing failed, do a ONE-TIME stricter retry
-        if (!parsed) {
-            ({ system, user } = buildMessages(prompt, true));
-            raw = await smartChat({ system, user, model, mode: "planner", maxOutputTokens: 2000 });
-
-            jsonText = extractJSONObject(String(raw || ""));
-            if (!jsonText) {
-                return res.status(500).json({
-                    error: "trip_generation_failed",
-                    detail: "no_json_found",
-                });
-            }
-
-            try {
-                parsed = JSON.parse(jsonText);
-            } catch {
-                return res.status(500).json({
-                    error: "trip_generation_failed",
-                    detail: "no_json_found",
-                });
-            }
-        }
-
-        // 4) Validate a bit (kept loose; your DB mapping remains unchanged)
-        const safe = ItinerarySchema.safeParse(parsed);
-        if (!safe.success) {
-            return res.status(500).json({
-                error: "trip_generation_failed",
-                detail: "json_schema_invalid",
-                issues: safe.error.issues?.slice(0, 10),
-            });
-        }
-        const itinerary = safe.data;
-
-        // 5) (Your existing persistence logic — unchanged in spirit)
         // If your previous version already created Trip + nested Days/Activities,
         // keep exactly that mapping here. Example below mirrors the common pattern.
         // If your schema differs, adjust field names only.
@@ -122,10 +184,10 @@ router.post("/", async (req: Request, res: Response) => {
             data: {
                 userId,
                 title: itinerary.title,
-                destination: itinerary.destination ?? null,
-                rawPlan: JSON.stringify(itinerary),
-                startDate: itinerary.startDate ? new Date(itinerary.startDate) : null,
-                endDate: itinerary.endDate ? new Date(itinerary.endDate) : null,
+                destination: itinerary.destination,
+                rawPlan: itineraryJson,
+                startDate: new Date(parsed.startDate),
+                endDate: new Date(parsed.endDate),
                 // Nested create if your schema has TripDay/Activity relations:
                 days: {
                     create: itinerary.days.map((d) => ({
@@ -133,8 +195,8 @@ router.post("/", async (req: Request, res: Response) => {
                         activities: {
                             create: (d.activities || []).map((a) => ({
                                 title: a.title,
-                                startTime: a.startTime ? new Date(`${d.date}T${a.startTime}:00`) : null,
-                                endTime: a.endTime ? new Date(`${d.date}T${a.endTime}:00`) : null,
+                                startTime: a.startTime ?? null,
+                                endTime: a.endTime ?? null,
                                 notes: a.notes ?? null,
                             })),
                         },
@@ -152,7 +214,7 @@ router.post("/", async (req: Request, res: Response) => {
             detail: String(err?.message || err),
         });
     }
-});
+})
 
 /** GET /api/trips/:id → trip with days + activities (kept as you had it) */
 router.get("/:id", async (req: Request, res: Response) => {
