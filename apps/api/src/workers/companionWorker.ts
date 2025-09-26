@@ -1,6 +1,6 @@
 import Redis from 'ioredis';
-import { getDailyWeather } from '../services/weather';
-import { getOpeningHours } from '../services/openingHours';
+import { getDailyWeather } from '../services/weather.js';
+import { getOpeningHours } from '../services/openingHours.js';
 
 const redis = new Redis(process.env.REDIS_URL || 'redis://redis:6379');
 

@@ -7,9 +7,9 @@ import { z } from "zod";
 type TodoTemplateLite = { title: string; kind?: string | null };
 import tripsRouter from "./routes/trips.js";
 import todosRouter from "./routes/todos.js";
-import { planRouter } from './routes/plan';
-import { companionRouter } from './routes/companion';
-import { startCompanionWorker } from './workers/companionWorker';
+import { planRouter } from './routes/plan.js';
+import { companionRouter } from './routes/companion.js';
+import { startCompanionWorker } from './workers/companionWorker.js';
 
 const app = express();
 app.use(cors());
