@@ -57,6 +57,7 @@ services:
       EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-http://96.30.194.54:3001}
       EXPO_DEVTOOLS_LISTEN_ADDRESS: 0.0.0.0     # serve DevTools to host
       CHOKIDAR_USEPOLLING: 1                    # watch files via volume
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
     ports:
       - "8081:8081"
       - "19000:19000"
