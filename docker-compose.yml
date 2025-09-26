@@ -55,6 +55,8 @@ services:
       dockerfile: apps/mobile/Dockerfile
     environment:
       EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-http://96.30.194.54:3001}
+      EXPO_DEVTOOLS_LISTEN_ADDRESS: 0.0.0.0     # serve DevTools to host
+      CHOKIDAR_USEPOLLING: 1                    # watch files via volume
     ports:
       - "8081:8081"
       - "19000:19000"
@@ -62,9 +64,14 @@ services:
       - "19002:19002"
     depends_on:
       - api
+    stdin_open: true
+    tty: true
     volumes:
       - ./apps/mobile:/app/apps/mobile
       - /app/node_modules
+    command: >
+      sh -lc "npm ci --workspaces --include-workspace-root || true &&
+              npx expo start --tunnel"
 
 volumes:
   dbdata:

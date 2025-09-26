@@ -56,7 +56,19 @@ planRouter.put('/:tripId', async (req: Request, res: Response) => {
     try {
         const p = PlanIn.parse(plan ?? {});
 
-        // Normalize activities from legacy items[]
+        // 1) Trip must exist (POST /api/plan first to create)
+        const trip = await prisma.trip.findUnique({
+            where: { id: tripId },
+            select: { id: true, startDate: true },
+        });
+        if (!trip) {
+            return res.status(404).json({
+                error: 'trip_not_found',
+                detail: `Trip ${tripId} not found. Create it via POST /api/plan, then PUT to /api/plan/:tripId.`,
+            });
+        }
+
+        // 2) Normalize activities from legacy items[]
         const daysRaw = (p.days || []).map((d) => ({
             ...d,
             activities: d.activities?.length
@@ -66,29 +78,22 @@ planRouter.put('/:tripId', async (req: Request, res: Response) => {
                 ),
         }));
 
-        // Fetch only what's real in your schema
-        const trip = await prisma.trip.findUnique({
-            where: { id: tripId },
-            select: { startDate: true },
-        });
-
+        // 3) Base date (YYYY-MM-DD) for filling missing day dates
         const baseISO =
             p.startDate ||
-            (trip?.startDate ? new Date(trip.startDate).toISOString().slice(0, 10) : undefined);
+            (trip.startDate ? new Date(trip.startDate).toISOString().slice(0, 10) : undefined);
 
-        // Build normalized days with a guaranteed date string (YYYY-MM-DD)
+        // 4) Ensure every day has date (YYYY-MM-DD)
         const normDays = daysRaw.map((d, i) => {
             let dateStr = d.date;
             if (!dateStr && baseISO) {
-                const base = new Date(baseISO + 'T00:00:00');
+                const base = new Date(baseISO + 'T00:00:00Z');
                 const dt = new Date(base);
-                dt.setDate(base.getDate() + i);
+                dt.setUTCDate(base.getUTCDate() + i);
                 dateStr = dt.toISOString().slice(0, 10);
             }
             return { ...d, date: dateStr };
         });
-
-        // If any day still lacks a date, fail early
         const missing = normDays.findIndex((d) => !d.date);
         if (missing !== -1) {
             return res.status(400).json({
@@ -99,35 +104,51 @@ planRouter.put('/:tripId', async (req: Request, res: Response) => {
             });
         }
 
-        // Create payloads that match your schema exactly
+        // 5) Helper: turn "HH:mm[:ss]" into a Date using the provided YYYY-MM-DD
+        function toDateTime(dateStr: string, time?: string | null) {
+            if (!time) return null;
+            const t = String(time).trim();
+            const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(t);
+            if (m) {
+                const [, h, min, s] = m;
+                const dt = new Date(dateStr + 'T00:00:00Z');
+                dt.setUTCHours(parseInt(h, 10), parseInt(min, 10), s ? parseInt(s, 10) : 0, 0);
+                return dt;
+            }
+            const maybe = new Date(t);
+            return isNaN(maybe.getTime()) ? null : maybe;
+        }
+
+        // 6) Build schema-safe payloads
         const dayCreates = normDays.map((d: any) => ({
-            date: new Date(d.date as string),
+            date: new Date((d.date as string) + 'T00:00:00Z'),
             activities: {
                 create: (d.activities || []).map((a: any) => ({
                     title: String(a?.title || 'Untitled'),
-                    ...(a.startTime ? { startTime: new Date(a.startTime) } : {}),
-                    ...(a.endTime ? { endTime: new Date(a.endTime) } : {}),
+                    startTime: toDateTime(d.date as string, a.startTime),
+                    endTime: toDateTime(d.date as string, a.endTime),
                     ...(a.placeId ? { placeId: String(a.placeId) } : {}),
                     ...(a.notes ? { notes: String(a.notes) } : {}),
                 })),
             },
         }));
 
-        // Transaction: wipe Activities -> DayPlans, then recreate
+        // 7) Rewrite Activities -> DayPlans -> recreate
         await prisma.$transaction([
             prisma.activity.deleteMany({ where: { dayPlan: { tripId } } }),
             prisma.dayPlan.deleteMany({ where: { tripId } }),
             prisma.trip.update({
                 where: { id: tripId },
                 data: {
-                    days: { create: dayCreates },
-                    // Best-effort stash if Trip has rawPlan (it does in your schema)
+                    days: { create: dayCreates as any },
+                    // if your Trip has rawPlan
+                    // @ts-ignore
                     rawPlan: JSON.stringify(plan ?? null),
                 },
             }),
         ]);
 
-        return res.json({ ok: true, tripId, days: normDays.length });
+        return res.json({ ok: true, tripId, days: dayCreates.length });
     } catch (err: any) {
         console.error('PUT /api/plan/:tripId error', err);
         return res
