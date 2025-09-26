@@ -42,7 +42,20 @@ router.patch("/:id", async (req: Request, res: Response) => {
     });
     res.json(todo);
 });
-
+// New: PUT /api/todos/:tripId/:id → update fields (status/title/kind)
+router.put('/:tripId/:id', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { title, status, kind } = req.body || {};
+    const todo = await prisma.todo.update({
+        where: { id },
+        data: {
+            ...(title ? { title } : {}),
+            ...(status ? { status } : {}),
+            ...(kind !== undefined ? { kind } : {}),
+        },
+    });
+    res.json(todo);
+});
 // (optional) DELETE /api/todos/:id
 router.delete("/:id", async (req: Request, res: Response) => {
     const { id } = req.params;

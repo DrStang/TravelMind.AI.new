@@ -7,6 +7,9 @@ import { z } from "zod";
 type TodoTemplateLite = { title: string; kind?: string | null };
 import tripsRouter from "./routes/trips.js";
 import todosRouter from "./routes/todos.js";
+import { planRouter } from './routes/plan';
+import { companionRouter } from './routes/companion';
+import { startCompanionWorker } from './workers/companionWorker';
 
 const app = express();
 app.use(cors());
@@ -14,7 +17,15 @@ app.use(express.json({ limit: "10mb" }));
 
 app.use("/api/trips", tripsRouter);
 app.use("/api/todos", todosRouter);
+app.use('/api/plan', planRouter);
+app.use('/api/companion', companionRouter);
 const redis = new Redis(process.env.REDIS_URL || "redis://127.0.0.1:6379");
+const port = process.env.PORT || 3001;
+app.listen(port, () => {
+    console.log(`API on :${port}`);
+    // start worker in-process (or run as separate process/container if preferred)
+    if (process.env.COMPANION_WORKER !== 'off') startCompanionWorker();
+});
 
 // Simple health
 app.get("/api/health", async (req: Request, res: Response) => {
@@ -157,5 +168,3 @@ app.post("/api/companion/ask", async (req: Request, res: Response) => {
     res.json({ answer, cached: false });
 });
 
-const port = Number(process.env.PORT || 3001);
-app.listen(port, () => console.log(`API on :${port}`));
